@@ -1,49 +1,64 @@
+# === app.py ===
 from flask import Flask, render_template, request
-import joblib
 import os
 from docx import Document
-from pdfminer.high_level import extract_text as extract_pdf_text  # <- new PDF reader
+from pdfminer.high_level import extract_text as extract_pdf_text
 
 app = Flask(__name__)
 
-# Load model and vectorizer
-model = joblib.load('resume_model.pkl')
-vectorizer = joblib.load('vectorizer.pkl')
-
-# Extract text from DOCX
+# === Helper functions ===
 def extract_text_from_docx(path):
     doc = Document(path)
     return '\n'.join(para.text for para in doc.paragraphs)
 
+def is_hired_by_rules(text, keywords_list, min_match=0.75):
+    """
+    Returns True if at least `min_match` percent of keywords are found.
+    Example: 0.75 = 75% of required keywords must match
+    """
+    text_lower = text.lower()
+    matched = 0
+
+    for keyword in keywords_list:
+        if keyword.strip().lower() in text_lower:
+            matched += 1
+
+    match_ratio = matched / len(keywords_list)
+    return match_ratio >= min_match
+
+# === Flask Routes ===
 @app.route('/')
 def home():
     return render_template('index.html')
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    if 'resume' not in request.files:
-        return "No file part"
+    if 'resume' not in request.files or 'keywords' not in request.form:
+        return "Missing resume or keywords."
 
     file = request.files['resume']
-    if file.filename == '':
-        return "No selected file"
+    keywords = request.form['keywords'].strip()
+    if file.filename == '' or keywords == '':
+        return "Please upload a file and enter required keywords."
 
     filename = file.filename.lower()
-    filepath = os.path.join('uploaded_resume.' + filename.split('.')[-1])
+    file_ext = filename.split('.')[-1]
+    filepath = f'uploaded_resume.{file_ext}'
     file.save(filepath)
 
-    # Check extension and extract
+    # Extract text
     if filename.endswith('.docx'):
         text = extract_text_from_docx(filepath)
     elif filename.endswith('.pdf'):
-        text = extract_pdf_text(filepath)  # <- pdfminer
+        text = extract_pdf_text(filepath)
     else:
-        return "Unsupported file type. Please upload .docx or .pdf"
+        return "Unsupported file type. Only .pdf or .docx allowed."
 
-    # Predict
-    X_input = vectorizer.transform([text])
-    prediction = model.predict(X_input)[0]
-    result = "Hired ✅" if prediction == 1 else "Not Hired ❌"
+    # Rule-based prediction with threshold
+    required_keywords = keywords.split(',')
+    prediction = is_hired_by_rules(text, required_keywords, min_match=0.75)
+    result = "Hired " if prediction else "Not Hired "
+
     return render_template('index.html', result=result)
 
 if __name__ == '__main__':
